@@ -1,17 +1,15 @@
-import argparse
 import asyncio
 import contextlib
 import logging
-import time
-from typing import Iterable
-from enum import IntFlag
 from bleak import BleakScanner, BleakClient
 from timeit import default_timer
-from collections import deque
-import math
+from python.Hrv_window import Hrv_window as Hrv_window
+from python.hrv_notification import Hrv_notification
+from python.convert import ToHex, minutes_seconds
 
 hrm_count = 1
 scan_timeout = 20
+window_size = 300
 
 hrm_service        = '0000180d-0000-1000-8000-00805f9b34fb'
 hrm_characteristic = '00002a37-0000-1000-8000-00805f9b34fb'
@@ -33,167 +31,27 @@ def print_uuids(client:BleakClient, ShowCharacteristicDescriptors:bool=False):
 
         print()
 
-def ToHex(bytes):
-    return f'[{" ".join(map("{:02x}".format, bytes))}]'
-
-def unsigned_16(b1, b2):
-    return b1 | b2 << 8
-
-class hrm_flags(IntFlag):   
-    HeartRateValueFormat16Bit = 0x01,
-    SensorContactStatus       = 0x02,
-    SensorContactFeature      = 0x04,
-    EnergyExpendedPresent     = 0x08,
-    RRIntervalPresent         = 0x10,
-
-class Hrv_window:
-    def __init__(self, window_size):
-        self.fifo = deque([], window_size)
-        self.dirty = False
-
-        self.rmssd = 0
-        self.ln_rmssd = 0
-        self.norm_hrv = 0
-
-    def is_artifact( self, hr, interval ):
-        hr_ms = 1000 * 60 / hr
-
-        upper_bound = hr_ms * 1.3
-        lower_bound = hr_ms * 0.7
-
-        result = (interval > upper_bound) \
-              or (interval < lower_bound)
-        
-        if result:
-            print(f'is_artifact: {lower_bound:.0f} < {interval} < {upper_bound:.0f}')
-
-        return result
-
-    def add_interval(self, hr, interval):
-        if self.is_artifact( hr, interval ):
-            pass
-            # print(f'Skipping artifact: {interval}ms')
-        else:
-            self.fifo.append(interval)
-            self.dirty = True
-
-    def add_intervals(self, hr, intervals):
-        for interval in intervals:
-            self.add_interval(hr, interval)
-
-    def hrv_ready(self):
-        return len(self.fifo) >= 2
-
-    def print_window(self):
-        print(
-            f'{", ".join([f"{interval:4d}" for interval in self.fifo])}'
-        )
-
-    def calc_hrv(self):
-        if not self.hrv_ready(): return False
-        if not self.dirty: return True
-
-        total = 0
-        for rr in self.fifo: total += rr
-
-        sd_total = 0
-        for i in range(0, len(self.fifo)-1):
-            sd_total += (self.fifo[i] - self.fifo[i+1])**2
-
-        self.rr_avg   = total / len(self.fifo)
-        self.rmssd    = math.sqrt(sd_total / len(self.fifo))
-        self.ln_rmssd = math.log(self.rmssd, math.e)
-        self.norm_hrv = self.ln_rmssd * 100 / 6.5
-
-        self.dirty = False
-        return True
-
-    def rr_avg_as_string(self):
-        return f'{(f"{self.rr_avg:.0f}ms" if self.hrv_ready() else "---")}'
-
-    def rmssd_as_string(self):
-        return f'{(f"{self.rmssd:.0f}ms" if self.hrv_ready() else "---")}'
-    
-    def ln_rmssd_as_string(self):
-        return f'{(f"{self.ln_rmssd:.1f}" if self.hrv_ready() else "---")}'
-
-    def norm_hrv_as_string(self):
-        return f'{(f"{self.norm_hrv:.0f}" if self.hrv_ready() else "---")}'
-
-    def full_hrv_as_string(self):
-        self.calc_hrv()
-        return f'RRAVG={self.rr_avg_as_string():>6}, RMSSD={self.rmssd_as_string():>5}, ln(RMSSD)={self.ln_rmssd_as_string():>3}, 0-100 score={self.norm_hrv_as_string():>3}'
-
-class Hrv_stats:
-    def __init__(self):
-        self.window_15 = Hrv_window(15)
-        self.window_60 = Hrv_window(60)
-        self.window_300 = Hrv_window(300)
-
-    def add_intervals(self, hr, intervals):
-        self.window_15.add_intervals( hr, intervals )
-        self.window_60.add_intervals( hr, intervals )
-        self.window_300.add_intervals( hr, intervals )
-
-    def calc_hrv(self):
-        self.window_15.calc_hrv()
-        self.window_60.calc_hrv()
-        self.window_300.calc_hrv()
-
-    def print_windows(self):
-        self.window_15.print_window()
-        self.window_60.print_window()
-        self.window_300.print_window()
-
-    def print_hrv(self):
-        print(self.window_15.full_hrv_as_string())
-        print(self.window_60.full_hrv_as_string())
-        print(self.window_300.full_hrv_as_string())
-
-
-def process_hrm_data(device, data, hrv_stats:Hrv_stats):
+def process_hrm_data(device, data, hrv_window:Hrv_window):
     global start
 
-    flags_bitfield = data[0]
+    hrm_notification = Hrv_notification(data)
 
-    flags = hrm_flags(flags_bitfield)
+    time_string = minutes_seconds( default_timer() - start )
+    heart_rate_string = f'HR:{hrm_notification.HeartRate:>3d}bpm ({1000*60/hrm_notification.HeartRate:4.0f}ms)' if hrm_notification.HeartRate else ' ---- '
+    interval_string = f'RR:{"["+", ".join([f"{interval:4d}" for interval in hrm_notification.RRIntervals])+"]":<13}'
+    print(f"{time_string} {device.name:<14} {heart_rate_string}, {interval_string}")
 
-    if flags.HeartRateValueFormat16Bit in flags:              
-        HeartRate = unsigned_16(data[1], data[2])
-        idx = 3              
-    else:
-        HeartRate = data[1]
-        idx = 2
-
-    if flags.EnergyExpendedPresent in flags:
-        EnergyExpended = unsigned_16(data[idx], data[idx+1])
-        idx += 2
-
-    RRIntervals = []
-
-    if flags.RRIntervalPresent in flags:
-        # This is a local function
-        def RRByteCount(): 
-            return len(data) - idx 
-
-        #print(f"RR Byte Count={RRByteCount()}")
-
-        while (RRByteCount() > 1):
-            RRIntervals.append( unsigned_16(data[idx], data[idx+1]))
-            idx += 2
-
-    if RRIntervals:
-        hrv_stats.add_intervals( HeartRate, RRIntervals )
-        hrv_stats.calc_hrv()
-
-    time_string = time.strftime( "%M:%S", time.gmtime( default_timer() - start ) )
-    heart_rate_string = f'HR:{HeartRate:>3d}bpm ({1000*60/HeartRate:4.0f}ms)' if HeartRate else ' ---- '
-    interval_string = f'RR:{"["+", ".join([f"{interval:4d}" for interval in RRIntervals])+"],":<13}'
-    # window_string = f'15s:{hrv_stats.window_15.rmssd_as_string():>5},  60s:{hrv_stats.window_60.rmssd_as_string():>5},  5min:{hrv_stats.window_300.rmssd_as_string():>5}'
-    window_string = f'5 min window:[ {hrv_stats.window_300.full_hrv_as_string()} ]'
-
-    print(f"{time_string} {device.name:<14} {heart_rate_string}, {interval_string} {window_string}")
-
+    if hrm_notification.RRIntervals:
+        for Interval in hrm_notification.RRIntervals:
+            (add_success, delta) = hrv_window.add_interval( hrm_notification.HeartRate, Interval )
+            if add_success:
+                if hrv_window.hrv_ready():
+                    ( rmssd, ln_rmssd, normalised_hrv ) = hrv_window.hrv()
+                    print(f"{' '*45}{Interval:>4d}ms -> Delta:{delta:>3d}ms -> rmssd:{rmssd:3.0f}ms, ln(rmssd):{ln_rmssd:3.1f}, 0-100:{normalised_hrv:2.0f}")
+                else:
+                    print(f"{' '*45}{Interval:>4d}ms -> Waiting for second RR interval.")
+            else:
+                print(f"{' '*45}{Interval:>4d}ms -> Skipping artifact.")
 
 async def connect_to_device( connect_lock: asyncio.Lock, device ):
     logging.info(f'starting {device.name} task')
@@ -217,11 +75,12 @@ async def connect_to_device( connect_lock: asyncio.Lock, device ):
             # Bluetooth adapter is now free to scan and connect another device
             # without disconnecting this one.
 
-            hrv_stats = Hrv_stats()
+            # hrv_window = Hrv_window(300)
+            hrv_window = Hrv_window(window_size)
 
             def hrm_callback(_, data):                
                 logging.info(f'{device.name} received {ToHex(data)}')
-                process_hrm_data( device, data, hrv_stats )
+                process_hrm_data( device, data, hrv_window )
 
             await client.start_notify(hrm_characteristic, hrm_callback)
             await asyncio.sleep(3600)

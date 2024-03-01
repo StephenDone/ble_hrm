@@ -5,10 +5,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug hrm.py",
+            "name": "Debug hrv_multi.py",
             "type": "debugpy",
             "request": "launch",
-            "module": "python.hrm"
+            "module": "python.hrv_multi"
         }
     ]
 }
