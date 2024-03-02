@@ -3,7 +3,7 @@ import contextlib
 import logging
 from bleak import BleakScanner, BleakClient
 from timeit import default_timer
-from Hrv_window import Hrv_window as Hrv_window
+from hrv_window import Hrv_window as Hrv_window
 from hrv_notification import Hrv_notification
 from convert import ToHex, minutes_seconds
 
