@@ -1,99 +1,41 @@
 import asyncio
 import contextlib
-import logging
 from bleak import BleakScanner, BleakClient
 from timeit import default_timer
-from hrv_window import HrvWindow as HrvWindow
-from hrv_notification import HrvNotification
-from convert import to_hex, minutes_seconds
+from hrm_uuids import hrm_service, hrm_characteristic
+from hrv_logger import HrvLogger
 
-hrm_count = 1
-scan_timeout = 20
-window_size = 300
-
-hrm_service        = '0000180d-0000-1000-8000-00805f9b34fb'
-hrm_characteristic = '00002a37-0000-1000-8000-00805f9b34fb'
+HRM_COUNT       =   1
+SCAN_TIMEOUT    =  20
+HRV_WINDOW_SIZE = 300
 
 start = None
 
-def print_uuids(client:BleakClient, ShowCharacteristicDescriptors:bool=False):
-
-    for handle in client.services.services:
-        svc = client.services.services[handle]
-        print(f"{handle:<2}        {svc.uuid}  {' '*44}  {svc.description}")
-
-        for char in svc.characteristics:
-            print(f"   {char.handle:<2}     {char.uuid}  {f'{char.properties}':<44}  {char.description}")
-
-            if(ShowCharacteristicDescriptors):
-                for des in char.descriptors:
-                    print(f"      {des.handle:<2}  {des.uuid}  {' '*44}  {des.description.replace('Client Characteristic Configuration','CCCD')}")
-
-        print()
-
-def process_hrm_data(device, data, hrv_window:HrvWindow):
-    global start
-
-    hrm_notification = HrvNotification(data)
-
-    time_string = minutes_seconds( default_timer() - start )
-    heart_rate_string = f'HR:{hrm_notification.heart_rate:>3d}bpm ({1000*60/hrm_notification.heart_rate:4.0f}ms)' if hrm_notification.heart_rate else ' ---- '
-    interval_string = f'RR:{"["+", ".join([f"{interval:4d}" for interval in hrm_notification.rr_intervals])+"]":<13}'
-    print(f"{time_string} {device.name:<14} {heart_rate_string}, {interval_string}")
-
-    if hrm_notification.rr_intervals:
-        for interval in hrm_notification.rr_intervals:
-            (add_success, delta) = hrv_window.add_interval( hrm_notification.heart_rate, interval )
-            if add_success:
-                if hrv_window.hrv_ready():
-                    ( rmssd, ln_rmssd, normalised_hrv ) = hrv_window.hrv()
-                    print(f"{' '*45}{interval:>4d}ms -> Delta:{delta:>3d}ms -> rmssd:{rmssd:3.0f}ms, ln(rmssd):{ln_rmssd:3.1f}, 0-100:{normalised_hrv:2.0f}")
-                else:
-                    print(f"{' '*45}{interval:>4d}ms -> Waiting for second RR interval.")
-            else:
-                print(f"{' '*45}{interval:>4d}ms -> Skipping artifact.")
-
 async def connect_to_device( connect_lock: asyncio.Lock, device ):
-    logging.info(f'starting {device.name} task')
-
     try:
         async with contextlib.AsyncExitStack() as stack:
 
-            # Trying to establish a connection to two devices at the same time
-            # can cause errors, so use a lock to avoid this.
             async with connect_lock:
 
                 client = BleakClient(device)
 
                 await stack.enter_async_context(client)
 
-                # This will be called immediately before client.__aexit__ when
-                # the stack context manager exits.
-                stack.callback(logging.info, f'disconnecting from {device.name}')
-
-            # The lock is released here. The device is still connected and the
-            # Bluetooth adapter is now free to scan and connect another device
-            # without disconnecting this one.
-
-            hrv_window = HrvWindow(window_size)
+            hrv_logger = HrvLogger(device.name, HRV_WINDOW_SIZE, start )
 
             def hrm_callback(_, data):                
-                logging.info(f'{device.name} received {to_hex(data)}')
-                process_hrm_data( device, data, hrv_window )
+                hrv_logger.process_hrm_data( data )
 
             await client.start_notify(hrm_characteristic, hrm_callback)
             await asyncio.sleep(3600)
             await client.stop_notify(hrm_characteristic)
 
-        # The stack context manager exits here, triggering disconnection.
-
-        logging.info(f'disconnected from {device}')
-
-    except Exception:
-        logging.exception(f'error with {device}')
+    except Exception as e:
+        print(f'error with {device}: {e}')
 
 
 async def get_hrm_devices(device_count):
+
     devices = []
     def detection_callback(device, advertising_data):
         if not device in devices:
@@ -105,11 +47,11 @@ async def get_hrm_devices(device_count):
 
     device_future = asyncio.Future()
 
-    print(f'Scanning for {device_count} device(s) with {scan_timeout}s timeout...')
+    print(f'Scanning for {device_count} device(s) with {SCAN_TIMEOUT}s timeout...')
 
     async with BleakScanner( detection_callback, [hrm_service], scanning_mode='active' ) as scanner:
         try:
-            async with asyncio.timeout(scan_timeout):
+            async with asyncio.timeout(SCAN_TIMEOUT):
                 return await device_future
         except asyncio.TimeoutError:
             print(f"Timed out scanning for {device_count} HRM sensor{'s' if device_count>1 else ''}")
@@ -117,16 +59,15 @@ async def get_hrm_devices(device_count):
 
 
 async def main():
+
     global start
     start = default_timer()
 
-    # logging.basicConfig(level=logging.INFO)
-
-    devices = await get_hrm_devices(device_count=hrm_count)
+    devices = await get_hrm_devices(device_count=HRM_COUNT)
 
     if not devices: return
 
-    print(f'found devices: {", ".join([device.name for device in devices])}')
+    print(f'found {len(devices)} device(s): {", ".join([device.name for device in devices])}')
 
     disconnect_future = asyncio.Future()
 
