@@ -1,4 +1,4 @@
-def ToHex(bytes):
+def to_hex(bytes):
     return f'[{" ".join(map("{:02x}".format, bytes))}]'
 
 def unsigned_16(b1, b2):

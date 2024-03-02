@@ -3,9 +3,9 @@ import contextlib
 import logging
 from bleak import BleakScanner, BleakClient
 from timeit import default_timer
-from hrv_window import Hrv_window as Hrv_window
-from hrv_notification import Hrv_notification
-from convert import ToHex, minutes_seconds
+from hrv_window import HrvWindow as HrvWindow
+from hrv_notification import HrvNotification
+from convert import to_hex, minutes_seconds
 
 hrm_count = 1
 scan_timeout = 20
@@ -31,27 +31,27 @@ def print_uuids(client:BleakClient, ShowCharacteristicDescriptors:bool=False):
 
         print()
 
-def process_hrm_data(device, data, hrv_window:Hrv_window):
+def process_hrm_data(device, data, hrv_window:HrvWindow):
     global start
 
-    hrm_notification = Hrv_notification(data)
+    hrm_notification = HrvNotification(data)
 
     time_string = minutes_seconds( default_timer() - start )
-    heart_rate_string = f'HR:{hrm_notification.HeartRate:>3d}bpm ({1000*60/hrm_notification.HeartRate:4.0f}ms)' if hrm_notification.HeartRate else ' ---- '
-    interval_string = f'RR:{"["+", ".join([f"{interval:4d}" for interval in hrm_notification.RRIntervals])+"]":<13}'
+    heart_rate_string = f'HR:{hrm_notification.heart_rate:>3d}bpm ({1000*60/hrm_notification.heart_rate:4.0f}ms)' if hrm_notification.heart_rate else ' ---- '
+    interval_string = f'RR:{"["+", ".join([f"{interval:4d}" for interval in hrm_notification.rr_intervals])+"]":<13}'
     print(f"{time_string} {device.name:<14} {heart_rate_string}, {interval_string}")
 
-    if hrm_notification.RRIntervals:
-        for Interval in hrm_notification.RRIntervals:
-            (add_success, delta) = hrv_window.add_interval( hrm_notification.HeartRate, Interval )
+    if hrm_notification.rr_intervals:
+        for interval in hrm_notification.rr_intervals:
+            (add_success, delta) = hrv_window.add_interval( hrm_notification.heart_rate, interval )
             if add_success:
                 if hrv_window.hrv_ready():
                     ( rmssd, ln_rmssd, normalised_hrv ) = hrv_window.hrv()
-                    print(f"{' '*45}{Interval:>4d}ms -> Delta:{delta:>3d}ms -> rmssd:{rmssd:3.0f}ms, ln(rmssd):{ln_rmssd:3.1f}, 0-100:{normalised_hrv:2.0f}")
+                    print(f"{' '*45}{interval:>4d}ms -> Delta:{delta:>3d}ms -> rmssd:{rmssd:3.0f}ms, ln(rmssd):{ln_rmssd:3.1f}, 0-100:{normalised_hrv:2.0f}")
                 else:
-                    print(f"{' '*45}{Interval:>4d}ms -> Waiting for second RR interval.")
+                    print(f"{' '*45}{interval:>4d}ms -> Waiting for second RR interval.")
             else:
-                print(f"{' '*45}{Interval:>4d}ms -> Skipping artifact.")
+                print(f"{' '*45}{interval:>4d}ms -> Skipping artifact.")
 
 async def connect_to_device( connect_lock: asyncio.Lock, device ):
     logging.info(f'starting {device.name} task')
@@ -75,11 +75,10 @@ async def connect_to_device( connect_lock: asyncio.Lock, device ):
             # Bluetooth adapter is now free to scan and connect another device
             # without disconnecting this one.
 
-            # hrv_window = Hrv_window(300)
-            hrv_window = Hrv_window(window_size)
+            hrv_window = HrvWindow(window_size)
 
             def hrm_callback(_, data):                
-                logging.info(f'{device.name} received {ToHex(data)}')
+                logging.info(f'{device.name} received {to_hex(data)}')
                 process_hrm_data( device, data, hrv_window )
 
             await client.start_notify(hrm_characteristic, hrm_callback)
