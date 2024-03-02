@@ -8,7 +8,7 @@
             "name": "Debug hrv_multi.py",
             "type": "debugpy",
             "request": "launch",
-            "module": "python.hrv_multi"
+            "module": "hrv_multi"
         }
     ]
 }

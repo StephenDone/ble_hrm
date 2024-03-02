@@ -1,6 +1,5 @@
 from enum import IntFlag
-
-from python.convert import unsigned_16
+from convert import unsigned_16
 
 class hrm_flags(IntFlag):   
     HeartRateValueFormat16Bit = 0x01,

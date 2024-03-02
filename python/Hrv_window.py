@@ -1,7 +1,6 @@
 import math
 from collections import deque
 
-
 class Hrv_window:
     def __init__(self, window_size):
         self.window = deque([], window_size)

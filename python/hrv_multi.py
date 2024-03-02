@@ -3,9 +3,9 @@ import contextlib
 import logging
 from bleak import BleakScanner, BleakClient
 from timeit import default_timer
-from python.Hrv_window import Hrv_window as Hrv_window
-from python.hrv_notification import Hrv_notification
-from python.convert import ToHex, minutes_seconds
+from Hrv_window import Hrv_window as Hrv_window
+from hrv_notification import Hrv_notification
+from convert import ToHex, minutes_seconds
 
 hrm_count = 1
 scan_timeout = 20
